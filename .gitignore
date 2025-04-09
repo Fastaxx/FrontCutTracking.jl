@@ -1,1 +1,40 @@
+# Julia specific
 /Manifest*.toml
+*.jl.*.cov
+*.jl.cov
+*.jl.mem
+
+# Generated documentation
+/docs/build/
+/docs/site/
+
+# Output files
+*.mp4
+*.gif
+*.png
+*.jpg
+*.jpeg
+/output/
+
+# Environment files
+.juliahistory
+.julia/
+local/
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Package specific temp files
+scratch.jl
+experiment/
+tmp/
+temp/
+/benchmarks/results/
+
+# OS generated files
+.directory
