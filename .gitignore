@@ -9,11 +9,11 @@
 /docs/site/
 
 # Output files
-*.mp4
-*.gif
-*.png
-*.jpg
-*.jpeg
+/*.mp4
+/*.gif
+/*.png
+/*.jpg
+/*.jpeg
 /output/
 
 # Environment files
