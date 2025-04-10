@@ -171,7 +171,7 @@ star_interfaces = Vector{Interface}()
 push!(star_interfaces, star)
 current = star
 
-for i in 1:300
+for i in 1:500
     global current
     # Evolve with curvature flow
     current = evolve_by_curvature_flow(current, 0.01, motion_factor=-1.0)
