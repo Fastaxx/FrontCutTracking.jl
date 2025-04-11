@@ -252,3 +252,4 @@ for (id1, id2) in refined_cardioid.connectivity
 end
 
 save("comparison.png", fig3)
+

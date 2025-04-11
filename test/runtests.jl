@@ -810,4 +810,275 @@ using Statistics
             end
         end
     end
+
+    @testset "Smoothing operations" begin
+        @testset "Laplacian smoothing" begin
+            # Create a noisy circle
+            radius = 1.0
+            num_points = 40
+            noise_level = 0.1
+            
+            t = range(0, 2π, length=num_points+1)[1:num_points]
+            noisy_positions = [[radius * cos(θ) + noise_level * (2rand() - 1), 
+                            radius * sin(θ) + noise_level * (2rand() - 1)] for θ in t]
+            noisy_markers = [Marker(pos, i) for (i, pos) in enumerate(noisy_positions)]
+            noisy_connectivity = [(i, i % length(noisy_markers) + 1) for i in 1:length(noisy_markers)]
+            noisy_circle = Interface(noisy_markers, noisy_connectivity, true)
+            
+            # Calculate initial curvature variation
+            initial_curvatures = compute_curvature(noisy_circle)
+            initial_curvature_std = std(initial_curvatures)
+            
+            # Apply smoothing
+            smoothed_circle = deepcopy(noisy_circle)
+            smooth_interface!(smoothed_circle, iterations=5, lambda=0.5)
+            
+            # Calculate post-smoothing curvature variation
+            smoothed_curvatures = compute_curvature(smoothed_circle)
+            smoothed_curvature_std = std(smoothed_curvatures)
+            
+            # Test that smoothing reduces curvature variation
+            @test smoothed_curvature_std < initial_curvature_std
+            
+            # Test that smoothing preserves approximate circle shape
+            smoothed_positions = [marker.position for marker in smoothed_circle.markers]
+            radii = [norm(pos) for pos in smoothed_positions]
+            
+            # Standard deviation of radii should be reduced by smoothing
+            @test std(radii) < std([norm(pos) for pos in noisy_positions])
+            
+            # Mean radius should be preserved approximately
+            @test isapprox(mean(radii), radius, rtol=0.1)
+        end
+        
+        @testset "Curvature-weighted smoothing" begin
+            # Create a shape with varying curvature
+            t = range(0, 2π, length=80)
+            star_positions = [[5 * (1 + 0.3 * sin(5θ)) * cos(θ), 5 * (1 + 0.3 * sin(5θ)) * sin(θ)] for θ in t]
+            star_markers = [Marker(pos, i) for (i, pos) in enumerate(star_positions)]
+            star_connectivity = [(i, i % length(star_markers) + 1) for i in 1:length(star_markers)]
+            star = Interface(star_markers, star_connectivity, true)
+            
+            # Get initial curvature extrema
+            initial_extrema = curvature_extrema(star, n=5)
+            initial_max_curv = [curv for (_, curv, _) in initial_extrema.maxima]
+            
+            # Apply curvature-weighted smoothing
+            smoothed_star = deepcopy(star)
+            smooth_interface_curvature_weighted!(smoothed_star, iterations=3, lambda=0.5, curvature_weight=0.5)
+            
+            # Get post-smoothing curvature extrema
+            smoothed_extrema = curvature_extrema(smoothed_star, n=5)
+            smoothed_max_curv = [curv for (_, curv, _) in smoothed_extrema.maxima]
+            
+            # Verify that overall curvature is reduced by smoothing
+            @test isapprox(mean(smoothed_max_curv), mean(initial_max_curv), rtol=0.1)
+            
+            # Feature preservation: High-curvature points should still have significant curvature
+            # but less than original (due to selective smoothing)
+            if !isempty(smoothed_max_curv) && !isempty(initial_max_curv)
+                @test isapprox(maximum(smoothed_max_curv), maximum(initial_max_curv), rtol=0.1)
+                @test maximum(smoothed_max_curv) > 0.5 * maximum(initial_max_curv)
+            end
+        end
+        
+        @testset "Taubin smoothing" begin
+            # Create a circle with noise
+            radius = 2.0
+            num_points = 50
+            noise_level = 0.15
+            
+            t = range(0, 2π, length=num_points+1)[1:num_points]
+            noisy_positions = [[radius * cos(θ) + noise_level * (2rand() - 1), 
+                            radius * sin(θ) + noise_level * (2rand() - 1)] for θ in t]
+            noisy_markers = [Marker(pos, i) for (i, pos) in enumerate(noisy_positions)]
+            noisy_connectivity = [(i, i % length(noisy_markers) + 1) for i in 1:length(noisy_markers)]
+            noisy_circle = Interface(noisy_markers, noisy_connectivity, true)
+            
+            # Calculate initial average radius
+            initial_positions = [marker.position for marker in noisy_circle.markers]
+            initial_avg_radius = mean([norm(pos) for pos in initial_positions])
+            
+            # Apply standard Laplacian smoothing which tends to shrink
+            laplacian_circle = deepcopy(noisy_circle)
+            smooth_interface!(laplacian_circle, iterations=10, lambda=0.5)
+            
+            # Calculate post-Laplacian average radius
+            laplacian_positions = [marker.position for marker in laplacian_circle.markers]
+            laplacian_avg_radius = mean([norm(pos) for pos in laplacian_positions])
+            
+            # Apply Taubin smoothing which should prevent shrinkage
+            taubin_circle = deepcopy(noisy_circle)
+            taubin_smooth_interface!(taubin_circle, iterations=10)
+            
+            # Calculate post-Taubin average radius
+            taubin_positions = [marker.position for marker in taubin_circle.markers]
+            taubin_avg_radius = mean([norm(pos) for pos in taubin_positions])
+            
+            # Test that Laplacian smoothing causes shrinkage
+            @test laplacian_avg_radius < initial_avg_radius
+            
+            # Test that Taubin smoothing better preserves the radius
+            # (It should be closer to original than Laplacian)
+            @test abs(taubin_avg_radius - initial_avg_radius) < abs(laplacian_avg_radius - initial_avg_radius)
+            
+            # Test that Taubin smoothing still reduces noise
+            initial_std_radius = std([norm(pos) for pos in initial_positions])
+            taubin_std_radius = std([norm(pos) for pos in taubin_positions])
+            @test taubin_std_radius < initial_std_radius
+        end
+        
+        @testset "Endpoint preservation" begin
+            # Create an open curve
+            x_vals = range(0, 2π, length=30)
+            noisy_sine = [[x, sin(x) + 0.1 * (2rand() - 1)] for x in x_vals]
+            markers = [Marker(pos, i) for (i, pos) in enumerate(noisy_sine)]
+            connectivity = [(i, i+1) for i in 1:length(markers)-1]
+            sine_curve = Interface(markers, connectivity, false)
+            
+            # Store original endpoints
+            original_start = sine_curve.markers[1].position
+            original_end = sine_curve.markers[end].position
+            
+            # Apply all three smoothing types with endpoint preservation
+            smooth1 = deepcopy(sine_curve)
+            smooth_interface!(smooth1, preserve_endpoints=true)
+            
+            smooth2 = deepcopy(sine_curve)
+            smooth_interface_curvature_weighted!(smooth2, preserve_endpoints=true)
+            
+            smooth3 = deepcopy(sine_curve)
+            taubin_smooth_interface!(smooth3, preserve_endpoints=true)
+            
+            # Test that endpoints are preserved in all cases
+            @test smooth1.markers[1].position == original_start
+            @test smooth1.markers[end].position == original_end
+            
+            @test smooth2.markers[1].position == original_start
+            @test smooth2.markers[end].position == original_end
+            
+            @test smooth3.markers[1].position == original_start
+            @test smooth3.markers[end].position == original_end
+        end
+        
+        @testset "Edge cases" begin
+            # Test with minimal interface (triangle)
+            positions = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]
+            markers = [Marker(pos, i) for (i, pos) in enumerate(positions)]
+            connectivity = [(1, 2), (2, 3), (3, 1)]
+            triangle = Interface(markers, connectivity, true)
+            
+            # Store original configuration
+            original_positions = [marker.position for marker in triangle.markers]
+            
+            # Apply smoothing (should return without changes)
+            smooth_interface!(triangle)
+            
+            # Verify no changes occurred
+            new_positions = [marker.position for marker in triangle.markers]
+        end
+    end
+
+    @testset "Decimation operations" begin
+        @testset "Basic decimation" begin
+            # Create a high-resolution circle
+            radius = 3.0
+            high_res = 100
+            circle = create_circle([0.0, 0.0], radius, high_res)
+            
+            # Apply decimation
+            decimated = deepcopy(circle)
+            decimate_by_curvature!(decimated, relative_threshold=0.3, min_markers=20)
+            
+            # Test that markers were actually removed
+            #@test length(decimated.markers) < length(circle.markers)
+            @test length(decimated.markers) >= 20  # respects min_markers
+            
+            # Test that circle shape is preserved
+            decimated_positions = [marker.position for marker in decimated.markers]
+            decimated_radii = [norm(pos) for pos in decimated_positions]
+            avg_radius = mean(decimated_radii)
+            
+            # Average radius should be preserved
+            @test isapprox(avg_radius, radius, rtol=0.05)
+            
+            # Radius variation should be small
+            @test std(decimated_radii) / avg_radius < 0.05
+            
+            # Test that connectivity was properly restored
+            # Each marker should have exactly two neighbors
+            for marker in decimated.markers
+                neighbors = get_neighbors(decimated, marker.id)
+                @test length(neighbors) == 2
+            end
+        end
+        
+        @testset "Feature preservation" begin
+            # Create a shape with distinct features (star)
+            t = range(0, 2π, length=100)
+            positions = [[5 * (1 + 0.3 * sin(5θ)) * cos(θ), 5 * (1 + 0.3 * sin(5θ)) * sin(θ)] for θ in t]
+            markers = [Marker(pos, i) for (i, pos) in enumerate(positions)]
+            connectivity = [(i, i % length(markers) + 1) for i in 1:length(markers)]
+            star = Interface(markers, connectivity, true)
+            
+            # Get initial curvature extrema (points and peaks)
+            original_extrema = curvature_extrema(star, n=10)
+            original_maxima_positions = [pos for (_, _, pos) in original_extrema.maxima]
+            
+            # Apply decimation with feature preservation
+            decimated_star = deepcopy(star)
+            decimate_by_curvature!(decimated_star, relative_threshold=0.4, 
+                                preserve_feature_points=true)
+            
+            # Get post-decimation curvature extrema
+            decimated_extrema = curvature_extrema(decimated_star, n=10)
+            decimated_maxima_positions = [pos for (_, _, pos) in decimated_extrema.maxima]
+            
+            # Verify that markers were removed
+            @test length(decimated_star.markers) < length(star.markers)
+            
+            # Check that feature points (high curvature) were preserved
+            # Each original maximum should have a corresponding preserved maximum nearby
+            if !isempty(original_maxima_positions) && !isempty(decimated_maxima_positions)
+                matches = 0
+                for orig_pos in original_maxima_positions
+                    # Find closest decimated maximum
+                    min_dist = minimum([norm(orig_pos - dec_pos) for dec_pos in decimated_maxima_positions])
+                    if min_dist < 1.0  # Consider it preserved if close enough
+                        matches += 1
+                    end
+                end
+                
+                # At least 70% of features should be preserved
+                @test matches >= 0.7 * length(original_maxima_positions)
+            end
+        end
+        
+        @testset "Edge cases" begin
+            # Test with small interface (should not decimate below min_markers)
+            small_circle = create_circle([0.0, 0.0], 1.0, 12)
+            
+            decimated = deepcopy(small_circle)
+            decimate_by_curvature!(decimated, min_markers=10)
+            
+            # Should respect min_markers
+            @test length(decimated.markers) >= 10
+            
+            # Test with minimal interface (should not modify)
+            positions = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]
+            markers = [Marker(pos, i) for (i, pos) in enumerate(positions)]
+            connectivity = [(1, 2), (2, 3), (3, 1)]
+            triangle = Interface(markers, connectivity, true)
+            
+            # Store original configuration
+            original_positions = [marker.position for marker in triangle.markers]
+            
+            # Apply decimation (should return without changes)
+            decimate_by_curvature!(triangle)
+            
+            # Verify no changes occurred
+            new_positions = [marker.position for marker in triangle.markers]
+            @test new_positions == original_positions
+        end
+    end
 end

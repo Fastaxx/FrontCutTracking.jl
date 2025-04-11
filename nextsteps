@@ -3,7 +3,6 @@ Motion simulation: Implement velocity fields and interface movement over time
 
 2. Advanced Visualization Features
 
-Interactive controls: Add interactive plots where users can drag markers and see curvature update
 3D visualization: Extend to 3D interfaces with surface curvature coloring
 3. Additional Analysis Tools
 
@@ -11,9 +10,9 @@ Length-scale analysis: Tools to identify characteristic length scales of interfa
 Fourier analysis: Decompose interface shapes into frequency components
 Persistence diagrams: Topological data analysis tools for interface characterization
 4. Interface Manipulation Tools
-Smoothing operations: Implement Laplacian smoothing and other methods to reduce noise
 
-Decimation: Methods to reduce marker count in low-curvature regions
+
+
 Boolean operations: Implement union, intersection, and difference operations between interfaces
 5. Performance Optimizations
 Spatial data structures: Implement k-d trees or quadtrees for efficient neighbor searches

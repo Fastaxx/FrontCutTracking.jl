@@ -335,3 +335,455 @@ function refine_by_curvature!(interface::Interface;
     
     return interface
 end
+
+"""
+    smooth_interface!(interface::Interface; 
+                    iterations=1, 
+                    lambda=0.5, 
+                    preserve_endpoints=true,
+                    constraint_function=nothing)
+
+Apply Laplacian smoothing to an interface to reduce noise and improve quality.
+
+# Arguments
+- `interface`: The Interface object to smooth
+- `iterations`: Number of smoothing iterations to perform
+- `lambda`: Relaxation factor controlling smoothing strength (0 to 1)
+- `preserve_endpoints`: Whether to keep endpoints fixed (for open curves)
+- `constraint_function`: Optional function(position) -> position to constrain points
+
+# Returns
+The modified interface
+"""
+function smooth_interface!(interface::Interface; 
+                         iterations=1, 
+                         lambda=0.5, 
+                         preserve_endpoints=true,
+                         constraint_function=nothing)
+    
+    # For very small interfaces, don't modify
+    if length(interface.markers) < 3
+        return interface
+    end
+    
+    # Create a dictionary to quickly look up marker positions by ID
+    positions = Dict(marker.id => marker.position for marker in interface.markers)
+    
+    # Perform multiple iterations if requested
+    for _ in 1:iterations
+        # Store new positions to update all at once after calculations
+        new_positions = Dict{Int, Vector{Float64}}()
+        
+        # For each marker
+        for marker in interface.markers
+            # Skip endpoints of open curves if preserving them
+            if preserve_endpoints && !interface.closed && 
+               (marker.id == interface.markers[1].id || 
+                marker.id == interface.markers[end].id)
+                continue
+            end
+            
+            # Get neighbor IDs
+            neighbor_ids = get_neighbors(interface, marker.id)
+            
+            # Skip if no neighbors (shouldn't happen in a valid interface)
+            if isempty(neighbor_ids)
+                continue
+            end
+            
+            # Calculate average neighbor position
+            avg_position = zeros(2)
+            for neighbor_id in neighbor_ids
+                avg_position += positions[neighbor_id]
+            end
+            avg_position /= length(neighbor_ids)
+            
+            # Apply relaxation factor for weighted average
+            new_pos = (1 - lambda) * marker.position + lambda * avg_position
+            
+            # Apply constraints if provided
+            if constraint_function !== nothing
+                new_pos = constraint_function(new_pos)
+            end
+            
+            # Store the new position
+            new_positions[marker.id] = new_pos
+        end
+        
+        # Update all markers with their new positions
+        for marker in interface.markers
+            if haskey(new_positions, marker.id)
+                # Update the marker's position
+                idx = findfirst(m -> m.id == marker.id, interface.markers)
+                interface.markers[idx] = Marker(new_positions[marker.id], marker.id)
+                # Update our position lookup dictionary
+                positions[marker.id] = new_positions[marker.id]
+            end
+        end
+    end
+    
+    return interface
+end
+
+"""
+    smooth_interface_curvature_weighted!(interface::Interface; 
+                                      iterations=1, 
+                                      lambda=0.5,
+                                      curvature_weight=0.5,
+                                      preserve_endpoints=true,
+                                      constraint_function=nothing)
+
+Apply curvature-weighted Laplacian smoothing to an interface.
+Smooths more aggressively in high-curvature regions while preserving features.
+
+# Arguments
+- `interface`: The Interface object to smooth
+- `iterations`: Number of smoothing iterations to perform
+- `lambda`: Base relaxation factor (0 to 1)
+- `curvature_weight`: How strongly curvature affects smoothing (0 to 1)
+- `preserve_endpoints`: Whether to keep endpoints fixed (for open curves)
+- `constraint_function`: Optional function(position) -> position to constrain points
+
+# Returns
+The modified interface
+"""
+function smooth_interface_curvature_weighted!(interface::Interface; 
+                                           iterations=1, 
+                                           lambda=0.5,
+                                           curvature_weight=0.5,
+                                           preserve_endpoints=true,
+                                           constraint_function=nothing)
+    
+    # For very small interfaces, don't modify
+    if length(interface.markers) < 3
+        return interface
+    end
+    
+    # Compute curvature for weighting
+    curvatures = compute_curvature(interface)
+    abs_curvatures = abs.(curvatures)
+    
+    # Normalize curvature values to [0,1] for weighting
+    max_curvature = maximum(abs_curvatures)
+    if max_curvature > 0
+        normalized_curvatures = abs_curvatures ./ max_curvature
+    else
+        normalized_curvatures = zeros(length(abs_curvatures))
+    end
+    
+    # Create a dictionary mapping marker IDs to curvature weights
+    curvature_weights = Dict{Int, Float64}()
+    for (i, marker) in enumerate(interface.markers)
+        # Higher curvature = stronger smoothing
+        curvature_weights[marker.id] = normalized_curvatures[i]
+    end
+    
+    # Create a dictionary to quickly look up marker positions by ID
+    positions = Dict(marker.id => marker.position for marker in interface.markers)
+    
+    # Perform multiple iterations if requested
+    for _ in 1:iterations
+        # Store new positions to update all at once after calculations
+        new_positions = Dict{Int, Vector{Float64}}()
+        
+        # For each marker
+        for (i, marker) in enumerate(interface.markers)
+            # Skip endpoints of open curves if preserving them
+            if preserve_endpoints && !interface.closed && 
+               (marker.id == interface.markers[1].id || 
+                marker.id == interface.markers[end].id)
+                continue
+            end
+            
+            # Get neighbor IDs
+            neighbor_ids = get_neighbors(interface, marker.id)
+            
+            # Skip if no neighbors (shouldn't happen in a valid interface)
+            if isempty(neighbor_ids)
+                continue
+            end
+            
+            # Calculate average neighbor position
+            avg_position = zeros(2)
+            for neighbor_id in neighbor_ids
+                avg_position += positions[neighbor_id]
+            end
+            avg_position /= length(neighbor_ids)
+            
+            # Apply adaptive relaxation factor based on curvature
+            adaptive_lambda = lambda * (1.0 + curvature_weight * curvature_weights[marker.id])
+            adaptive_lambda = min(0.95, adaptive_lambda)  # Cap to prevent instability
+            
+            # Apply relaxation factor for weighted average
+            new_pos = (1 - adaptive_lambda) * marker.position + adaptive_lambda * avg_position
+            
+            # Apply constraints if provided
+            if constraint_function !== nothing
+                new_pos = constraint_function(new_pos)
+            end
+            
+            # Store the new position
+            new_positions[marker.id] = new_pos
+        end
+        
+        # Update all markers with their new positions
+        for marker in interface.markers
+            if haskey(new_positions, marker.id)
+                # Update the marker's position
+                idx = findfirst(m -> m.id == marker.id, interface.markers)
+                interface.markers[idx] = Marker(new_positions[marker.id], marker.id)
+                # Update our position lookup dictionary
+                positions[marker.id] = new_positions[marker.id]
+            end
+        end
+    end
+    
+    return interface
+end
+
+"""
+    taubin_smooth_interface!(interface::Interface;
+                          iterations=5,
+                          lambda=0.5,
+                          mu=-0.53,
+                          preserve_endpoints=true,
+                          constraint_function=nothing)
+
+Apply Taubin smoothing to an interface, which prevents shrinkage.
+Alternates between positive and negative relaxation factors.
+
+# Arguments
+- `interface`: The Interface object to smooth
+- `iterations`: Number of smoothing iterations to perform
+- `lambda`: Positive relaxation factor (0 to 1)
+- `mu`: Negative relaxation factor (typically around -0.53)
+- `preserve_endpoints`: Whether to keep endpoints fixed (for open curves)
+- `constraint_function`: Optional function(position) -> position to constrain points
+
+# Returns
+The modified interface
+"""
+function taubin_smooth_interface!(interface::Interface;
+                               iterations=5,
+                               lambda=0.5,
+                               mu=-0.53,
+                               preserve_endpoints=true,
+                               constraint_function=nothing)
+    
+    # For very small interfaces, don't modify
+    if length(interface.markers) < 3
+        return interface
+    end
+    
+    # Create a dictionary to quickly look up marker positions by ID
+    positions = Dict(marker.id => marker.position for marker in interface.markers)
+    
+    # Perform multiple iterations of Taubin smoothing (lambda-mu smoothing)
+    for i in 1:iterations
+        # Store new positions to update all at once after calculations
+        new_positions = Dict{Int, Vector{Float64}}()
+        
+        # Choose relaxation factor based on iteration (alternate lambda/mu)
+        relaxation = (i % 2 == 1) ? lambda : mu
+        
+        # For each marker
+        for marker in interface.markers
+            # Skip endpoints of open curves if preserving them
+            if preserve_endpoints && !interface.closed && 
+               (marker.id == interface.markers[1].id || 
+                marker.id == interface.markers[end].id)
+                continue
+            end
+            
+            # Get neighbor IDs
+            neighbor_ids = get_neighbors(interface, marker.id)
+            
+            # Skip if no neighbors
+            if isempty(neighbor_ids)
+                continue
+            end
+            
+            # Calculate average neighbor position
+            avg_position = zeros(2)
+            for neighbor_id in neighbor_ids
+                avg_position += positions[neighbor_id]
+            end
+            avg_position /= length(neighbor_ids)
+            
+            # Apply relaxation factor (positive or negative)
+            new_pos = marker.position + relaxation * (avg_position - marker.position)
+            
+            # Apply constraints if provided
+            if constraint_function !== nothing
+                new_pos = constraint_function(new_pos)
+            end
+            
+            # Store the new position
+            new_positions[marker.id] = new_pos
+        end
+        
+        # Update all markers with their new positions
+        for marker in interface.markers
+            if haskey(new_positions, marker.id)
+                # Update the marker's position
+                idx = findfirst(m -> m.id == marker.id, interface.markers)
+                interface.markers[idx] = Marker(new_positions[marker.id], marker.id)
+                # Update our position lookup dictionary
+                positions[marker.id] = new_positions[marker.id]
+            end
+        end
+    end
+    
+    return interface
+end
+
+"""
+    decimate_by_curvature!(interface::Interface; 
+                         curvature_threshold=:auto,
+                         relative_threshold=0.5, 
+                         min_markers=10,
+                         min_segment_length=nothing,
+                         preserve_feature_points=true,
+                         smooth_after=false)
+
+Reduce the number of markers in regions of low curvature while preserving 
+shape features in high-curvature regions.
+"""
+function decimate_by_curvature!(interface::Interface; 
+                              curvature_threshold=:auto,
+                              relative_threshold=0.5, 
+                              min_markers=10,
+                              min_segment_length=nothing,
+                              preserve_feature_points=true,
+                              smooth_after=false)
+    
+    # For very small interfaces, don't modify
+    n_markers = length(interface.markers)
+    if n_markers <= min_markers
+        return interface
+    end
+    
+    # Compute curvature for all markers
+    curvatures = compute_curvature(interface)
+    abs_curvatures = abs.(curvatures)
+    
+    # Determine the threshold for decimation (opposite of refinement)
+    if curvature_threshold == :auto
+        # Use relative thresholding based on mean curvature
+        mean_abs_curvature = mean(abs_curvatures)
+        threshold = mean_abs_curvature * relative_threshold
+    else
+        threshold = float(curvature_threshold)
+    end
+    
+    # Create a mapping of marker IDs to absolute curvature values
+    curvature_map = Dict(marker.id => abs_curvatures[i] for (i, marker) in enumerate(interface.markers))
+    
+    # Create a mapping from marker IDs to positions
+    position_map = Dict(marker.id => marker.position for marker in interface.markers)
+    
+    # Identify feature points (local extrema) if needed
+    feature_points = Set{Int}()
+    if preserve_feature_points
+        # Find local maxima and minima of curvature
+        extrema = curvature_extrema(interface, n=max(3, n_markers ÷ 10))
+        
+        # Extract just the marker IDs from extrema.maxima and extrema.minima
+        # (which may contain tuples with IDs, curvature values, and positions)
+        for point in extrema.maxima
+            if point isa Int
+                push!(feature_points, point)
+            elseif point isa Tuple && length(point) > 0
+                # Extract just the ID (first element) from the tuple
+                push!(feature_points, point[1])
+            end
+        end
+        
+        for point in extrema.minima
+            if point isa Int
+                push!(feature_points, point)
+            elseif point isa Tuple && length(point) > 0
+                # Extract just the ID (first element) from the tuple
+                push!(feature_points, point[1])
+            end
+        end
+    end
+    
+    # Identify candidate markers for removal (low curvature markers)
+    candidates = Int[]
+    for (i, marker) in enumerate(interface.markers)
+        # Skip feature points and endpoints of open curves
+        if marker.id in feature_points || 
+           (!interface.closed && (i == 1 || i == n_markers))
+            continue
+        end
+        
+        # Check if curvature is below threshold
+        if abs_curvatures[i] < threshold
+            push!(candidates, marker.id)
+        end
+    end
+    
+    # Sort candidates by increasing curvature (remove lowest curvature first)
+    sort!(candidates, by=id -> curvature_map[id])
+    
+    # Process candidates for removal
+    markers_removed = 0
+    for candidate_id in candidates
+        # Stop if we've reached the minimum marker count
+        if n_markers - markers_removed <= min_markers
+            break
+        end
+        
+        # Skip if marker was already removed in a previous step
+        if !haskey(position_map, candidate_id)
+            continue
+        end
+        
+        # Get neighbors of this marker
+        neighbor_ids = get_neighbors(interface, candidate_id)
+        
+        # Only remove if it has exactly 2 neighbors (don't remove at junctions)
+        if length(neighbor_ids) != 2
+            continue
+        end
+        
+        # Get positions of neighboring markers
+        neighbor1_pos = position_map[neighbor_ids[1]]
+        neighbor2_pos = position_map[neighbor_ids[2]]
+        
+        # Calculate new segment length if this marker is removed
+        new_segment_length = norm(neighbor2_pos - neighbor1_pos)
+        
+        # Skip if this would create a segment that's too long
+        if min_segment_length !== nothing && new_segment_length > min_segment_length
+            continue
+        end
+        
+        # Calculate angle between segments to ensure we're not removing in high-curvature regions
+        pos = position_map[candidate_id]
+        v1 = normalize(neighbor1_pos - pos)
+        v2 = normalize(neighbor2_pos - pos)
+        angle = acos(clamp(dot(v1, v2), -1.0, 1.0))
+        
+        # Skip if angle is sharp (high curvature region)
+        if abs(angle) < 2.5 # About 145 degrees
+            continue
+        end
+        
+        # If all checks pass, remove this marker
+        remove_marker!(interface, candidate_id)
+        
+        # Update our tracking variables
+        delete!(position_map, candidate_id)
+        markers_removed += 1
+    end
+    
+    # Apply light smoothing if requested, to improve quality after decimation
+    if smooth_after && markers_removed > 0
+        smooth_interface!(interface, iterations=1, lambda=0.3)
+    end
+    
+    println("Decimation removed $markers_removed markers")
+    return interface
+end
