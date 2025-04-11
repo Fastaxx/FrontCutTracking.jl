@@ -254,3 +254,268 @@ function curvature_extrema(interface::Interface; n=1, min_separation=0)
     
     return (maxima=maxima, minima=minima)
 end
+
+"""
+    length_scale_spectrum(interface::Interface; 
+                        max_scales=10, 
+                        scale_factor=1.2,
+                        feature_measure=:curvature_extrema)
+
+Compute a spectrum of feature significance across different length scales.
+
+# Arguments
+- `interface`: The Interface object to analyze
+- `max_scales`: Maximum number of scales to analyze
+- `scale_factor`: Factor by which smoothing increases between scales
+- `feature_measure`: Method to quantify features (:curvature_extrema, :curvature_variance, or :fourier)
+
+# Returns
+A NamedTuple with:
+- `scales`: Vector of length scales (smoothing levels)  
+- `significance`: Vector of feature significance values at each scale
+- `features`: Vector of feature counts or measures at each scale
+"""
+function length_scale_spectrum(interface::Interface; 
+                             max_scales=10, 
+                             scale_factor=1.2,
+                             feature_measure=:curvature_extrema)
+    
+    # Initialize storage for results
+    scales = Float64[]
+    significance = Float64[]
+    features = []
+    
+    # Create a copy of the interface to progressively smooth
+    current = deepcopy(interface)
+    
+    # Get perimeter of interface for scale normalization
+    perimeter = interface_length(current)
+    base_scale = perimeter / length(current.markers)
+    
+    # Calculate initial feature measure before any smoothing
+    initial_features = compute_feature_measure(current, feature_measure)
+    push!(scales, base_scale)
+    push!(significance, 1.0)  # Initial significance is 1.0 (100%)
+    push!(features, initial_features)
+    
+    # Progressive smoothing and feature analysis
+    for i in 1:max_scales
+        # Calculate smoothing parameters for this scale
+        smoothing_scale = base_scale * (scale_factor^i)
+        iterations = max(1, round(Int, sqrt(i)))
+        lambda = min(0.5, 0.2 * i / max_scales)
+        
+        # Apply smoothing at this scale
+        smooth_interface!(current, iterations=iterations, lambda=lambda)
+        
+        # Measure features at this scale
+        current_features = compute_feature_measure(current, feature_measure)
+        
+        # Calculate relative significance compared to original
+        sig = feature_significance(current_features, initial_features, feature_measure)
+        
+        # Store results
+        push!(scales, smoothing_scale)
+        push!(significance, sig)
+        push!(features, current_features)
+    end
+    
+    return (scales=scales, significance=significance, features=features)
+end
+
+"""
+    dominant_length_scales(interface::Interface; 
+                         max_scales=15, 
+                         threshold=0.2,
+                         feature_measure=:curvature_extrema)
+
+Identify the dominant length scales in an interface.
+
+# Arguments
+- `interface`: The Interface object to analyze
+- `max_scales`: Maximum number of scales to analyze
+- `threshold`: Threshold for significance changes to identify dominant scales
+- `feature_measure`: Method to quantify features
+
+# Returns
+A Vector of dominant length scales
+"""
+function dominant_length_scales(interface::Interface; 
+                              max_scales=15, 
+                              threshold=0.2,
+                              feature_measure=:curvature_extrema)
+    
+    # Compute the length scale spectrum
+    spectrum = length_scale_spectrum(interface, 
+                                    max_scales=max_scales, 
+                                    feature_measure=feature_measure)
+    
+    # Identify scales where significant changes occur
+    dominant = Float64[]
+    
+    # Look for significant drops in the significance curve
+    for i in 2:length(spectrum.scales)
+        delta = spectrum.significance[i-1] - spectrum.significance[i]
+        if delta > threshold
+            # This scale represents a significant change
+            push!(dominant, spectrum.scales[i])
+        end
+    end
+    
+    return dominant
+end
+
+"""
+    filter_by_scale(interface::Interface, scale::Float64)
+
+Filter an interface to retain only features above a certain scale.
+
+# Arguments
+- `interface`: The Interface object to filter
+- `scale`: The length scale threshold
+
+# Returns
+A new Interface with small-scale features removed
+"""
+function filter_by_scale(interface::Interface, scale::Float64)
+    # Calculate number of smoothing iterations based on scale
+    # This is a heuristic conversion from scale to smoothing parameters
+    perimeter = interface_length(interface)
+    base_scale = perimeter / length(interface.markers)
+    
+    # Convert scale to relative value
+    relative_scale = scale / base_scale
+    
+    # Calculate smoothing parameters
+    iterations = max(1, round(Int, log(relative_scale)))
+    lambda = min(0.5, 0.3 * log(relative_scale))
+    
+    # Create a copy and apply appropriate smoothing
+    filtered = deepcopy(interface)
+    smooth_interface!(filtered, iterations=iterations, lambda=lambda)
+    
+    return filtered
+end
+
+"""
+    length_scale_decomposition(interface::Interface; 
+                             n_scales=3,
+                             feature_measure=:curvature_extrema)
+
+Decompose an interface into multiple components at different scales.
+
+# Arguments
+- `interface`: The Interface object to decompose
+- `n_scales`: Number of scale levels to extract
+- `feature_measure`: Method to choose scales
+
+# Returns
+A Vector of Interfaces representing different scale components
+"""
+function length_scale_decomposition(interface::Interface; 
+                                  n_scales=3,
+                                  feature_measure=:curvature_extrema)
+    
+    # First identify dominant scales
+    scales = dominant_length_scales(interface, 
+                                  max_scales=max(10, 2*n_scales),
+                                  feature_measure=feature_measure)
+    
+    # If we don't have enough dominant scales, create evenly spaced scales
+    if length(scales) < n_scales
+        perimeter = interface_length(interface)
+        base_scale = perimeter / length(interface.markers)
+        max_scale = base_scale * 10  # Arbitrary maximum scale
+        
+        # Create logarithmically spaced scales
+        scales = [base_scale * (max_scale/base_scale)^(i/(n_scales-1)) for i in 0:(n_scales-1)]
+    else
+        # Take the most significant n_scales
+        scales = scales[1:min(n_scales, length(scales))]
+    end
+    
+    # Create filtered interfaces at each scale
+    decomposition = [filter_by_scale(interface, scale) for scale in scales]
+    
+    return decomposition
+end
+
+# Helper function to compute feature measures based on chosen method
+function compute_feature_measure(interface::Interface, feature_measure::Symbol)
+    if feature_measure == :curvature_extrema
+        # Count significant extrema points
+        extrema = curvature_extrema(interface, n=length(interface.markers) ÷ 4)
+        return (maxima=length(extrema.maxima), minima=length(extrema.minima))
+    
+    elseif feature_measure == :curvature_variance
+        # Measure variance in curvature
+        curvatures = compute_curvature(interface)
+        return var(curvatures)
+    
+    elseif feature_measure == :fourier
+        # Compute simple Fourier decomposition (for closed curves)
+        if interface.closed
+            positions = [marker.position for marker in interface.markers]
+            x = [pos[1] for pos in positions]
+            y = [pos[2] for pos in positions]
+            
+            # Compute FFT (simplified for this use case)
+            fx = abs.(fft(x))
+            fy = abs.(fft(y))
+            
+            # Power spectrum (simplified)
+            power = fx.^2 + fy.^2
+            return power[2:div(end,2)]  # Return non-redundant frequencies
+        else
+            # For open curves, fall back to curvature variance
+            curvatures = compute_curvature(interface)
+            return var(curvatures)
+        end
+    else
+        error("Unknown feature measure: $feature_measure")
+    end
+end
+
+# Helper function to calculate feature significance
+function feature_significance(current_features, initial_features, feature_measure::Symbol)
+    if feature_measure == :curvature_extrema
+        # Ratio of extrema counts
+        total_current = current_features.maxima + current_features.minima
+        total_initial = initial_features.maxima + initial_features.minima
+        
+        # Avoid division by zero
+        if total_initial == 0
+            return 0.0
+        else
+            return total_current / total_initial
+        end
+    
+    elseif feature_measure == :curvature_variance
+        # Ratio of variances
+        if initial_features == 0
+            return 0.0
+        else
+            return current_features / initial_features
+        end
+    
+    elseif feature_measure == :fourier
+        # For Fourier, use ratio of high-frequency power
+        if length(current_features) >= 3 && length(initial_features) >= 3
+            # Use upper half of frequencies
+            high_idx = div(length(current_features), 2):length(current_features)
+            
+            current_power = sum(current_features[high_idx])
+            initial_power = sum(initial_features[high_idx])
+            
+            if initial_power == 0
+                return 0.0
+            else
+                return current_power / initial_power
+            end
+        else
+            return 0.0
+        end
+    else
+        return 0.0
+    end
+end

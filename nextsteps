@@ -6,8 +6,8 @@ Motion simulation: Implement velocity fields and interface movement over time
 3D visualization: Extend to 3D interfaces with surface curvature coloring
 3. Additional Analysis Tools
 
-Length-scale analysis: Tools to identify characteristic length scales of interface features
-Fourier analysis: Decompose interface shapes into frequency components
+
+
 Persistence diagrams: Topological data analysis tools for interface characterization
 4. Interface Manipulation Tools
 
